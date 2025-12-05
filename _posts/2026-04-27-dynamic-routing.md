@@ -1,7 +1,7 @@
 ---
 layout: distill
-title: Your MoE Model Does Not Have to Select K Experts All the Time
-description: Standard Mixture-of-Experts (MoE) models rely on fixed top-k routing, applying uniform computation across tokens regardless of their complexity.
+title: Your MoE Model Does Not Have to Select Fixed Number of Experts
+description: Standard Mixture-of-Experts (MoE) models adopt fixed top-k routing, applying uniform computation across tokens regardless of their complexity.
   This rigidity often leads to suboptimal efficiency and performance.
   Dynamic routing addresses this by adaptively selecting the optimal number of experts for each token.
   This post introduces the principles of dynamic routing and reviews key techniques for flexible expert allocation.
@@ -40,10 +40,9 @@ toc:
   - name: What is Dynamic Routing and Why is it Important?
   - name: How to Apply Dynamic Routing?
     subsections:
-      - name: Routing Probability Thresholding
+      - name: Thresholding
       - name: Dynamic Proposer
-      - name: Zero-Computational Experts
-  - name: Applications
+      - name: Zero-Computation Experts
   - name: Challenges
   - name: Conclusion
 
@@ -183,7 +182,7 @@ Now let's dive into the details!
 There are three main categories of dynamic routing techniques:
 1. **Thresholding**: Instead of selecting top-k experts for each token, the router selects experts based on a threshold.
 2. **Dynamic Proposer**: An additional proposer module for predicting the number of activated experts for each token.
-3. **Zero-Computational Experts**: Some special experts are regarded as placeholders for routing, but not used for computation.
+3. **Zero-Computation Experts**: Some special experts are regarded as placeholders for routing, but not used for computation.
 
 Here, we will introduce these three categories of dynamic routing techniques in detail.
 
@@ -246,7 +245,7 @@ where $\mathbf{I}_{N_e}$ is the identity matrix of size $\mathbb{R}^{N_e \times 
 The results demonstrate that DynMoE can achieve comparable performance than vanilla MoE with 11% throughput improvements.
 
 **Non-Linear Thresholding:** Wang et al. (2025)<d-cite key="wang2025remoe"></d-cite> proposes ReMoE, which is a non-linear thresholding-based dynamic routing technique to select experts for each token.
-Instead of setting a threshold as a hyper-parameter, ReMoE finds activated experts by replacing the Top-K softmax with a ReLU activation function.
+Instead of setting a threshold as a hyper-parameter, ReMoE finds activated experts by replacing the Top-$k$ softmax with a ReLU activation function.
 
 $$
 G(\mathbf{x}) = \text{ReLU}(\mathbf{x} \mathbf{W}_g),
@@ -292,33 +291,143 @@ Based on these settings and specially designed kernels, BlockFFN achieves 3.67x 
 
 ### Dynamic Proposer
 
-Ada-K<d-cite key="yue2025adak"></d-cite>
+Intuitively, dynamic routing aims to change the value of $k$ for each token.
+Besides the above thresholding-based ideas, can we directly predict the value of $k$?
+The answer is YES, and that is exactly the idea of dynamic proposer.
+Dynamic proposers take the token's representation as input and output the number of activated experts as a prediction.
 
-DES<d-cite key="han2025des"></d-cite>
+Ada-K<d-cite key="yue2025adak"></d-cite> applies an additional linear projection to the token's representation to obtain a probability distribution and then samples the activated expert number $k$ from the distribution.
 
-### Zero-Computational Experts
+$$
+P(\mathbf{x}) = \text{softmax}(\mathbf{x} \mathbf{W}_p),
+$$
 
-AdaMoE<d-cite key="zeng2024adamoe"></d-cite>
+$$
+k \sim P(\mathbf{x}),
+$$
 
-MoE++<d-cite key="jin2025moepp"></d-cite>
+where $\mathbf{W}_p \in \mathbb{R}^{d \times N_e}$ is a trainable parameter.
 
-LongCat-Flash<d-cite key="meituan2025longcat"></d-cite>
+<div class="l-body">
+  <div class="row">
+    <iframe src="{{ 'assets/html/2026-04-27-dynamic-routing/adak_sampling.html' | relative_url }}" frameborder='0' scrolling='no' height="500px" width="100%"></iframe>
+  </div>
+</div>
 
-<!-- 
-## Applications
 
-- LongCat-Flash<d-cite key="meituan2025longcat"></d-cite>
-- UniMoE-2.0<d-cite key="li2025uni-moe-2.0-omni"></d-cite>
-- BlockFFN<d-cite key="song2025blockffn"></d-cite> -->
+Because such a sampling process is not differentiable, Ada-K updates $\mathbf{W}_p$ with the Proximal Policy Optimization (PPO) algorithm<d-cite key="schulman2017ppo"></d-cite>, and take the log likelihood of language modeling as the reward:
+
+$$
+r = \log P(x_t | x_1, \dots, x_{t-1}),
+$$
+
+where $x_t$ is the expected token to be generated.
+
+The sampling process is useful for the training process since it brings stochasticity to explore different efficiency-performance trade-offs and compute policy gradients for PPO.
+During inference, Ada-K simply selects $k$ with the highest probability as the activated expert number.
+
+For pre-trained language models, Ada-K is efficient since it only updates the linear projection matrix $\mathbf{W}_p$ and keeps all other parameters frozen.
+For example, when applying Ada-K on Qwen1.5-MoE-14.3B-A2.7B<d-footnote>https://huggingface.co/Qwen/Qwen1.5-MoE-A2.7B</d-footnote>, it takes 1.58h to fine-tune 2.95M parameters, and Ada-K could bring 1.22x speedup over the baseline.
+
+### Zero-Computation Experts
+
+Zero-Computation Experts constitute an efficient sparse-expert mechanism within dynamic routing.
+The basic idea is to incorporate a subset of experts that perform no actual computations during the forward pass.
+By maintaining a fixed number of activated experts, the selection of these zero-computation experts introduces neither additional FLOPs nor memory overhead, thereby effectively reducing the computational cost.
+This design improves efficiency without compromising model capacity, and it further enables flexible, adaptive resource allocation when combined with dynamic routing.
+
+**Null Experts:** Zeng et al. (2024)<d-cite key="zeng2024adamoe"></d-cite> propose AdaMoE, in which zero-computation experts are defined as performing no operations and consuming zero FLOPs.
+Building on the original top-$k$ MoE, the router still selects a fixed number of experts, but some of these may be zero-computation null experts.
+When a token is routed to a null expert, it is dropped out and no forward computation is performed, no additional FLOPs are incurred, and no activation memory is consumed, allowing the number of real experts per token to adapt dynamically.
+
+
+<div class="l-body">
+  <div class="row">
+    <iframe src="{{ 'assets/html/2026-04-27-dynamic-routing/adamoe.html' | relative_url }}" frameborder='0' scrolling='no' height="600px" width="100%"></iframe>
+  </div>
+</div>
+
+Following the introduction of zero-computation experts, the lack of a load-balancing mechanism may lead the router to over-select real experts, resulting in an uneven workload distribution and undermining the intended FLOPs reduction. To mitigate this, AdaMoE incorporates an average-load strategy for null experts within the load-balancing loss:
+
+$$
+\mathcal{L}_{\text{balance}} = (N_e + N_z) \sum_{i=1}^{N_e + N_z} \tilde{f}_i \cdot P_i,
+$$
+
+$$
+\tilde{f}_i = 
+\begin{cases} 
+f_i & \text{if } i \leq N_e \\
+\frac{1}{N_z} \sum_{j=N_e+1}^{N_e+N_z} f_j & \text{if } i > N_e 
+\end{cases},
+$$
+
+where $N_z$ denotes the number of null experts, $f_i$ denotes the load of the $i$-th expert and $P_i$ denotes the routing probability of the $i$-th expert.
+The modified load-balancing loss in AdaMoE accounts for null experts to control the average load of real experts, while avoiding unnecessary constraints among identical zero-computation experts, thus giving the router greater flexibility to optimize token-to-expert allocation.
+
+From the experimental results, AdaMoE demonstrates that it achieves higher average accuracy across multiple benchmarks while reducing FLOPs by an average of 15.21% during inference.
+
+
+**Zero, Copy, and Constant Experts:** Jin et al. (2025)<d-cite key="jin2025moepp"></d-cite> propose MoE++, a heterogeneous MoE framework designed to improve both efficiency and effectiveness. It introduces three types of zero-computation experts: Zero, Copy, and Constant experts, which replace a subset of real experts to reduce computational cost without altering expert counts or model capacity:
+
+- Zero Experts: output a zero vector, requiring no computation: $E_i(\mathbf{x}) = \mathbf{0}$
+- Copy Experts: reuse the input token representation directly: $E_i(\mathbf{x}) = \mathbf{x}$
+- Constant Experts: output a learned constant vector independent of input: $E_i(\mathbf{x}) = \alpha_1 \mathbf{x} + \alpha_2 \mathbf{v}$, where $[\alpha_1, \alpha_2] = \text{softmax}(\mathbf{x} \mathbf{W}_c)$. $\mathbf{W}_c \in \mathbb{R}^{d \times 2}$ and $\mathbf{v} \in \mathbb{R}^d$ are trainable parameters.
+
+These experts incur negligible computation, communication, and memory overhead.
+When these zero-computation experts are selected, they effectively skip real expert computation while maintaining the top-k selection budget and sparsity patterns.
+
+```mermaid
+graph TD
+    T[Token Input] --> R{Top-2 Router}
+    
+    R -.-> E1[Expert 1]
+    R -- "Prob: 0.3" --> E2[Expert 2]
+    R -.-> E3[Expert 3]
+    R -.-> E4[Expert 4]
+
+    R -- "Prob: 0.2" --> E5[Zero Expert]
+    R -.-> E6[Copy Expert]
+    R -.-> E7[Constant Expert]
+    
+    E2 --> Out[Output]
+    E5 --> Out
+
+    style E2 fill:#ff9999,stroke:#333,stroke-width:2px
+    style E5 fill:#636efa,stroke:#333,stroke-width:2px
+```
+
+
+To address potential issues such as unstable routing or over-selection of low-computation experts, MoE++ introduces a Heterogeneous Load Balance Loss, controlled by a hyperparameter $\tau$ which regulates the allocation of tokens between zero-computation and FFN experts, promoting a balanced computational load across the expert ensemble.
+
+$$
+\mathcal{L}_{\text{balance}} = \sum_{i=1}^{N_e + N_z} \eta_i f_i P_i, \quad \eta_i = 
+\begin{cases} 
+1, & \text{if Expert } i \text{ is an FFN expert}, \\
+\tau, & \text{if Expert } i \text{ is a zero-computation expert}.
+\end{cases}
+$$
+
+The experimental results show that MoE++ consistently outperforms same-scale Vanilla MoE across downstream tasks, improves expert throughput by 15%, and achieves performance comparable to dense models with 2–3x more parameters under limited training budgets.
 
 
 ## Challenges
 
-- Performance-Efficiency Tradeoff
-- Efficient Implementations: infra, kernel, frameworks
-- Expert Load Balancing
-- Sparsity controlling
+Dynamic routing techniques have been utilized to various MoE models.
+For example, Meituan LongCat Team has scaled Copy Expert (one of the zero-computation experts) MoE model to 560B parameters<d-cite key="meituan2025longcat"></d-cite>, and Uni-MoE-2.0-Omni employs thresholding-based dynamic routing to build multi-modal MoE.<d-cite key="li2025uni-moe-2.0-omni"></d-cite>
+
+However, there are still some challenges to be addressed for dynamic routing:
+
+- **Performance-Efficiency Tradeoff:** Although some dynamic routing techniques can achieve better performance together with efficiency, the performance and efficiency are still a tradeoff. For example, DynMoE brings 11% throughput improvements over vanilla MoE, but the performance is slightly lower. This is because the performance and efficiency are not always aligned. If we want to achieve extreme sparsity, the number of activated experts would be very small, which may lead to performance degradation.
+- **Efficient Implementations:** For heterogeneous zero-computation experts or special thresholding-based dynamic routing, current grouped GEMM kernels may not be directly applicable, and specialized implementations are needed. For example, BlockFFN designs kernels for ReLU activation and chunk-level sparsification, which significantly accelerates the model throughput.
+- **Sparsity Controlling:** If no sparsity regularization is applied, the number of activated experts tends to be very high due to the performance optimization objective. Therefore, most dynamic routing techniques apply sparsity regularization to control the number of activated experts.
+- **Expert Load Balancing:** For MoE with zero-computation experts, models may tend to select regular experts, which may lead to uneven workload distribution and undermining the intended FLOPs reduction. To address this, dynamic routing should incorporate an load balancing strategy for both regular and zero-computation experts.
+
 
 ## Conclusion
 
+In this post, we provide a brief introduction to MoE dynamic routing techniques and review several key methods, including thresholding, dynamic proposer, and zero-computation experts.
+Dynamic routing offers a promising direction for MoE models by breaking the rigidity of fixed top-k routing and enabling adaptive expert allocation for each token.
+While challenges such as performance-efficiency tradeoff, efficient implementations, sparsity controlling, and expert load balancing still exist, dynamic routing has shown great potential in improving the performance and efficiency of MoE models, and has been applied to existing large language models.
+As MoE models continue to evolve, we expect dynamic routing to play an increasingly important role in future large-scale foundation models.
 
+🚚 After reading this blog, if you are planning to start a moving company, you may think of dynamic routing for your business! :)

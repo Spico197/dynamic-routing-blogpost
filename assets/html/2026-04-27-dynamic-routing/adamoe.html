@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        #plot-container {
+            margin-bottom: 20px;
+        }
+        .controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+            gap: 15px;
+        }
+        input[type=range] {
+            width: 200px;
+        }
+        #k-value-display {
+            font-weight: bold;
+            font-size: 18px;
+            color: #333;
+            min-width: 60px;
+        }
+        .stats {
+            text-align: center;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+        .legend-box {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <label for="k-slider" style="font-size: 16px;">Select Top-k:</label>
+        <input type="range" id="k-slider" min="1" max="8" value="4" oninput="updatePlot()">
+        <span id="k-value-display">k = 4</span>
+        
+    </div>
+
+    <div class="stats">
+        Activated Regular Experts: <span id="active-regular-count" style="font-weight: bold; color: #636efa;">0</span> | 
+        Null Experts (Dropped): <span id="active-null-count" style="font-weight: bold; color: #EF553B;">0</span> <br>
+        AdaMoE Sparsity: <span id="adamoe-sparsity-display" style="font-weight: bold; color: #333;">0%</span> |
+        Vanilla MoE Sparsity: <span id="vanilla-sparsity-display" style="font-weight: bold; color: #555;">0%</span>
+    </div>
+
+    <div id="plot-container"></div>
+
+    <div style="text-align: center; font-size: 14px; color: #666;">
+        <span class="legend-box" style="background-color: #636efa;"></span>Regular Expert
+        <span class="legend-box" style="background-color: #EF553B; margin-left: 15px;"></span>Null Expert
+        <span class="legend-box" style="background-color: #d3d3d3; margin-left: 15px;"></span>Inactive
+    </div>
+
+    <script>
+        // Define experts: 8 Regular, 4 Null
+        // Pre-defined probabilities to show interesting mix in top-k
+        const experts = [
+            { id: 1, type: 'Regular', prob: 0.25 },
+            { id: 2, type: 'Null',    prob: 0.18 },
+            { id: 3, type: 'Regular', prob: 0.15 },
+            { id: 4, type: 'Regular', prob: 0.12 },
+            { id: 5, type: 'Null',    prob: 0.09 },
+            { id: 6, type: 'Regular', prob: 0.07 },
+            { id: 7, type: 'Regular', prob: 0.05 },
+            { id: 8, type: 'Null',    prob: 0.04 },
+            { id: 9, type: 'Regular', prob: 0.02 },
+            { id: 10, type: 'Regular', prob: 0.015 },
+            { id: 11, type: 'Null',    prob: 0.01 },
+            { id: 12, type: 'Regular', prob: 0.005 }
+        ];
+
+        // Sort just in case, though they are already sorted by prob descending here
+        experts.sort((a, b) => b.prob - a.prob);
+
+        const xValues = experts.map(e => `${e.type} ${e.id}`);
+        const yValues = experts.map(e => e.prob);
+        
+        // Colors
+        const COLOR_REGULAR = '#636efa';
+        const COLOR_NULL = '#EF553B';
+        const COLOR_INACTIVE = '#d3d3d3';
+
+        function updatePlot() {
+            const k = parseInt(document.getElementById('k-slider').value);
+            document.getElementById('k-value-display').textContent = `k = ${k}`;
+
+            const colors = [];
+            let activeRegular = 0;
+            let activeNull = 0;
+
+            for (let i = 0; i < experts.length; i++) {
+                if (i < k) {
+                    // In top-k
+                    if (experts[i].type === 'Regular') {
+                        colors.push(COLOR_REGULAR);
+                        activeRegular++;
+                    } else {
+                        colors.push(COLOR_NULL);
+                        activeNull++;
+                    }
+                } else {
+                    // Not in top-k
+                    colors.push(COLOR_INACTIVE);
+                }
+            }
+
+            document.getElementById('active-regular-count').textContent = activeRegular;
+            document.getElementById('active-null-count').textContent = activeNull;
+
+            // Calculate AdaMoE Sparsity (1 - activeRegular / totalRegular)
+            // Measures how sparse the computation is relative to using all functional experts
+            const totalRegular = experts.filter(e => e.type === 'Regular').length;
+            const adamoeSparsity = ((1 - activeRegular / totalRegular) * 100).toFixed(1);
+            document.getElementById('adamoe-sparsity-display').textContent = `${adamoeSparsity}%`;
+
+            // Calculate Vanilla MoE Sparsity (1 - k / totalExperts)
+            // Measures standard MoE sparsity (activated vs total available parameters)
+            const totalExperts = experts.length;
+            const vanillaSparsity = ((Math.max(0, 1 - k / totalRegular)) * 100).toFixed(1);
+            document.getElementById('vanilla-sparsity-display').textContent = `${vanillaSparsity}%`;
+
+            const trace = {
+                x: xValues,
+                y: yValues,
+                type: 'bar',
+                marker: {
+                    color: colors
+                },
+                text: yValues.map(v => v.toFixed(3)),
+                textposition: 'auto',
+                hovertemplate: '<b>%{x}</b><br>Probability: %{y:.3f}<extra></extra>'
+            };
+
+            const layout = {
+                title: 'AdaMoE Routing (Top-k Selection)',
+                xaxis: { title: 'Experts (Sorted by Probability)', tickangle: -45 },
+                yaxis: { title: 'Routing Probability' },
+                margin: { b: 100 },
+                height: 450
+            };
+
+            const config = { responsive: true, displayModeBar: false };
+
+            Plotly.react('plot-container', [trace], layout, config);
+        }
+
+        // Initial render
+        updatePlot();
+    </script>
+</body>
+</html>
+
