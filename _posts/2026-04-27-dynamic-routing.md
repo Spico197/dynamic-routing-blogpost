@@ -245,9 +245,50 @@ where $\mathbf{I}_{N_e}$ is the identity matrix of size $\mathbb{R}^{N_e \times 
 
 The results demonstrate that DynMoE can achieve comparable performance than vanilla MoE with 11% throughput improvements.
 
-**Non-Linear Thresholding:**
+**Non-Linear Thresholding:** Wang et al. (2025)<d-cite key="wang2025remoe"></d-cite> proposes ReMoE, which is a non-linear thresholding-based dynamic routing technique to select experts for each token.
+Instead of setting a threshold as a hyper-parameter, ReMoE finds activated experts by replacing the Top-K softmax with a ReLU activation function.
 
-Should we put these into thresholding? ReMoE<d-cite key="wang2025remoe"></d-cite>, BlockFFN<d-cite key="song2025blockffn"></d-cite>
+$$
+G(\mathbf{x}) = \text{ReLU}(\mathbf{x} \mathbf{W}_g),
+$$
+
+Due to the non-linearity of ReLU, experts with smaller activations would be filtered out, and the number of activated experts is: $\sum_{i=1}^{N_e} \mathbb{1}\{G_i(\mathbf{x}) > 0\}$.
+As shown in the figure below, due to the ReLU activation, experts with positive routing logits would be activated.
+Besides, the ReLU gate is fully differentiable, which allows a stable training process.
+
+<div class="l-body">
+  <div class="row">
+    <iframe src="{{ 'assets/html/2026-04-27-dynamic-routing/relu.html' | relative_url }}" frameborder='0' scrolling='no' height="400px" width="100%"></iframe>
+  </div>
+</div>
+
+To constrain the number of expected activated experts, ReMoE introduces a sparsity regularization loss term:
+
+$$
+\mathcal{L}_{\text{reg}}(t) = \lambda(t) \cdot \sum_{i=1}^{N_e} G_i(\mathbf{x}),
+$$
+
+$$
+\lambda(t) = \lambda(t-1) \cdot \alpha^{\text{sign}((1 - N_k/N_e) - S(t))},
+$$
+
+$$
+S(t) = 1 - \frac{1}{N_l N_e} \sum_{l=1}^{N_l} \sum_{i=1}^{N_e} \mathbb{1}\{G_i^l(\mathbf{x}) > 0\},
+$$
+
+where $\lambda(t)$ is an adaptive coefficient at training step $t$, which is initialized with a small value.
+$\alpha > 1$ is a hyper parameter to control the update multiplier, and $S(t)$ represents the sparsity of the activated experts at training step $t$.
+Here the sparsity is computed over $N_l$ layers.
+The whole regularization loss is designed to close the gap between the number of expected activated experts $N_k$ and the actual number of activated experts.
+Therefore, ReMoE does not bring training or inference acceleration, but it can adaptively adjust the number of activated experts on each layer to improve the final performance.
+
+BlockFFN<d-cite key="song2025blockffn"></d-cite> further improves the ReLU activation with an RMS layer normalization to control the magnitude of the activations and stabilize the training process.
+
+$$G(\mathbf{x}) = \text{RMSNorm}(\text{ReLU}(\mathbf{x} \mathbf{W}_g)).$$
+
+BlockFFN also proposes an activation locality loss to encourage similar activation patters in neighboring tokens, and a chunk sparsification loss to maximize the sparsity of a chunk of consecutive tokens.
+Based on these settings and specially designed kernels, BlockFFN achieves 3.67x speedup over baseline and shows better commonsense reasoning ability compared to ReMoE especially on larger models.
+
 
 ### Dynamic Proposer
 
