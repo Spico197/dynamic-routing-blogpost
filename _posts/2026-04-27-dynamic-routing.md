@@ -2,8 +2,7 @@
 layout: distill
 title: Your MoE Model Does Not Have to Select Fixed Number of Experts
 description: Standard Mixture-of-Experts (MoE) models adopt fixed top-k routing, applying uniform computation across tokens regardless of their complexity.
-  This rigidity often leads to suboptimal efficiency and performance.
-  Dynamic routing addresses this by adaptively selecting the optimal number of experts for each token.
+  This rigidity often leads to suboptimal efficiency and performance, and dynamic routing could address this by adaptively selecting the optimal number of experts for each token.
   This post introduces the principles of dynamic routing and reviews key techniques for flexible expert allocation.
 date: 2026-04-27
 future: true
@@ -215,8 +214,8 @@ From the experimental results, MoE-Dynamic shows its effectiveness to:
 
 
 **Trainable Thresholding:** Different from cumulative thresholding, DynMoE<d-cite key="guo2025dynmoe"></d-cite> proposes a top-any gating function with gating parameters $\mathbf{W}_g \in \mathbb{R}^{d \times N_e}$ and trainable thresholds $\theta \in \mathbb{R}^{N_e}$.
-To determine if an expert should be activated, DynMoE first computes the cosine similarity between the token's representation $\mathbf{x}$ and the router $\mathbf{W}_g$, then applies a sigmoid function $\sigma(\cdot)$ to normalize $s$ to [0, 1].
-After that, it compares the normalized similarity $s$ with the trainable thresholds $\mathbf{\theta}$ to determine if the expert should be activated.
+To determine if an expert should be activated, DynMoE first computes the cosine similarity $s$ between the token's representation $\mathbf{x}$ and the router $\mathbf{W}_g$, then applies a sigmoid function $\sigma(\cdot)$ to normalize the similarity to [0, 1].
+After that, it compares the normalized similarity $\sigma(s)$ with the trainable thresholds $\sigma(\mathbf{\theta})$ to determine if the expert should be activated.
 
 $$
 s(\mathbf{x}) = \frac{\langle \mathbf{x}, \mathbf{W}_g \rangle}{\|\mathbf{x}\| \|\mathbf{W}_g\|},
@@ -307,6 +306,8 @@ k \sim P(\mathbf{x}),
 $$
 
 where $\mathbf{W}_p \in \mathbb{R}^{d \times N_e}$ is a trainable parameter.
+The figure below demonstrates the sampling process for training.
+After clicking on the `Sample k` button, Ada-K would sample the $k$ value based on the probability distribution.
 
 <div class="l-body">
   <div class="row">
@@ -419,7 +420,7 @@ However, there are still some challenges to be addressed for dynamic routing:
 
 - **Performance-Efficiency Tradeoff:** Although some dynamic routing techniques can achieve better performance together with efficiency, the performance and efficiency are still a tradeoff. For example, DynMoE brings 11% throughput improvements over vanilla MoE, but the performance is slightly lower. This is because the performance and efficiency are not always aligned. If we want to achieve extreme sparsity, the number of activated experts would be very small, which may lead to performance degradation.
 - **Efficient Implementations:** For heterogeneous zero-computation experts or special thresholding-based dynamic routing, current grouped GEMM kernels may not be directly applicable, and specialized implementations are needed. For example, BlockFFN designs kernels for ReLU activation and chunk-level sparsification, which significantly accelerates the model throughput.
-- **Sparsity Controlling:** If no sparsity regularization is applied, the number of activated experts tends to be very high due to the performance optimization objective. Therefore, most dynamic routing techniques apply sparsity regularization to control the number of activated experts.
+- **Sparsity Controlling:** If no sparsity regularization is applied, the number of activated experts tends to be very high due to the performance optimization objective. Therefore, most dynamic routing techniques have to apply the sparsity regularization to control the number of activated experts. However, it is still challenging to control sparsity with the same level of performance as the vanilla top-k strategy.
 - **Expert Load Balancing:** For MoE with zero-computation experts, models may tend to select regular experts, which may lead to uneven workload distribution and undermining the intended FLOPs reduction. To address this, dynamic routing should incorporate an load balancing strategy for both regular and zero-computation experts.
 
 
